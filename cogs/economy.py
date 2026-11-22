@@ -392,14 +392,19 @@ class Economy(commands.Cog):
             f"✅ Баланс {user.mention} = **{_fmt(amount)} {cur}**.", ephemeral=True
         )
 
-    @app_commands.command(name="eco_config", description="Настроить валюту и размер дейлика")
-    @app_commands.describe(currency="Название валюты (например, 🍕 или коины)", daily_amount="Размер дейлика")
+    @app_commands.command(name="eco_config", description="Настроить валюту, дейлик и лимит ставки")
+    @app_commands.describe(
+        currency="Название валюты (например, 🍕 или коины)",
+        daily_amount="Размер дейлика",
+        max_bet="Максимальная ставка в играх",
+    )
     @app_commands.checks.has_permissions(administrator=True)
     async def eco_config(
         self,
         interaction: discord.Interaction,
         currency: str = None,
         daily_amount: app_commands.Range[int, 1] = None,
+        max_bet: app_commands.Range[int, 10] = None,
     ):
         if interaction.guild is None:
             await interaction.response.send_message("Только на сервере.", ephemeral=True)
@@ -410,14 +415,350 @@ class Economy(commands.Cog):
             gcfg["currency"] = currency[:20]
         if daily_amount:
             gcfg["daily_amount"] = daily_amount
+        if max_bet:
+            gcfg["max_bet"] = max_bet
         save(SETTINGS_FILE, data)
         await interaction.response.send_message(
             embed=_embed(
                 "⚙️ Экономика настроена",
                 f"Валюта: **{_currency(interaction.guild.id)}**\n"
-                f"Дейлик: **{_fmt(_daily_amount(interaction.guild.id))}**",
+                f"Дейлик: **{_fmt(_daily_amount(interaction.guild.id))}**\n"
+                f"Макс. ставка: **{_fmt(_max_bet(interaction.guild.id))}**",
             )
         )
+
+    # ── Мини-игры: команды ────────────────────────────────────────────────
+
+    @app_commands.command(name="games", description="Список мини-игр и правила")
+    async def games(self, interaction: discord.Interaction):
+        cur = _currency(interaction.guild.id) if interaction.guild else DEFAULT_CURRENCY
+        e = _embed(
+            "🎮 Мини-игры",
+            f"Ставки: от **{_fmt(BET_MIN)}** до **{_fmt(_max_bet(interaction.guild.id) if interaction.guild else DEFAULT_MAX_BET)} {cur}**\n\n"
+            "🎲 **/dice ставка** — кости против бота, у кого сумма выше.\n"
+            "Победа x1.9, ничья — ставка возвращается\n\n"
+            "🎰 **/slots ставка** — три барабана.\n"
+            "Три в ряд x10, два в ряд x1.5\n\n"
+            "🪙 **/flip ставка** — угадай орёл или решка. Угадал x1.9\n\n"
+            "✌️ **/rps ставка** — камень-ножницы-бумага против бота. Победа x2",
+        )
+        e.set_footer(text="Игры — это слив монет в никуда, играй в удовольствие")
+        await interaction.response.send_message(embed=e)
+
+    @app_commands.command(name="dice", description="Кости против бота — у кого сумма выше")
+    @app_commands.describe(bet="Ставка")
+    async def dice(self, interaction: discord.Interaction, bet: app_commands.Range[int, 1]):
+        await play_dice(interaction, bet)
+
+    @app_commands.command(name="slots", description="Слот-машина: три в ряд = x10")
+    @app_commands.describe(bet="Ставка")
+    async def slots(self, interaction: discord.Interaction, bet: app_commands.Range[int, 1]):
+        await play_slots(interaction, bet)
+
+    @app_commands.command(name="flip", description="Орёл или решка — угадай сторону")
+    @app_commands.describe(bet="Ставка")
+    async def flip(self, interaction: discord.Interaction, bet: app_commands.Range[int, 1]):
+        if not await GameBase._check_bet(interaction, bet):
+            return
+        e = _embed(
+            "🪙 Монетка",
+            f"Ставка: **{_fmt(bet)} {_currency(interaction.guild.id)}**\nВыбирай сторону:",
+        )
+        await interaction.response.send_message(embed=e, view=FlipView(bet))
+
+    @app_commands.command(name="rps", description="Камень, ножницы, бумага против бота")
+    @app_commands.describe(bet="Ставка")
+    async def rps(self, interaction: discord.Interaction, bet: app_commands.Range[int, 1]):
+        if not await GameBase._check_bet(interaction, bet):
+            return
+        e = _embed(
+            "✌️ КНБ",
+            f"Ставка: **{_fmt(bet)} {_currency(interaction.guild.id)}**\nДелай ход:",
+        )
+        await interaction.response.send_message(embed=e, view=RPSView(bet))
+
+
+# ── Мини-игры ─────────────────────────────────────────────────────────────────
+
+BET_MIN = 10
+DEFAULT_MAX_BET = 1000
+
+SLOTS_EMOJIS = ["🍒", "🍋", "🍇", "💎", "🔔", "7️⃣"]
+RPS_CHOICES = {"rock": "🪨 Камень", "paper": "📄 Бумага", "scissors": "✂️ Ножницы"}
+RPS_BEATS = {"rock": "scissors", "paper": "rock", "scissors": "paper"}
+
+
+def _max_bet(guild_id: int) -> int:
+    return int(_settings(guild_id).get("max_bet", DEFAULT_MAX_BET))
+
+
+def _game_view():
+    return discord.ui.View(timeout=120, disable_on_timeout=True)
+
+
+class GameBase:
+    """Общие проверки для игр: гильдия, лимиты, баланс."""
+
+    @staticmethod
+    async def _check_bet(interaction: discord.Interaction, amount: int) -> bool:
+        if interaction.guild is None:
+            await interaction.response.send_message("Только на сервере.", ephemeral=True)
+            return False
+        if amount < BET_MIN:
+            await interaction.response.send_message(
+                f"Минимальная ставка — {_fmt(BET_MIN)} {_currency(interaction.guild.id)}.", ephemeral=True
+            )
+            return False
+        if amount > _max_bet(interaction.guild.id):
+            await interaction.response.send_message(
+                f"Максимальная ставка — {_fmt(_max_bet(interaction.guild.id))} {_currency(interaction.guild.id)}.",
+                ephemeral=True,
+            )
+            return False
+        _, acc = _acc(interaction.guild.id, interaction.user.id)
+        if acc["balance"] < amount:
+            await interaction.response.send_message(
+                f"Не хватает: ставка {_fmt(amount)}, у тебя {_fmt(acc['balance'])} {_currency(interaction.guild.id)}.",
+                ephemeral=True,
+            )
+            return False
+        return True
+
+
+# ── Кости ─────────────────────────────────────────────────────────────────────
+
+class DiceRematchView(discord.ui.View):
+    def __init__(self, bet: int):
+        super().__init__(timeout=120, disable_on_timeout=True)
+        self.bet = bet
+
+    @discord.ui.button(label="🎲 Кинуть ещё", style=discord.ButtonStyle.primary)
+    async def again(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await play_dice(interaction, self.bet, edit=True)
+
+
+async def play_dice(interaction: discord.Interaction, bet: int, edit: bool = False):
+    if not edit and not await GameBase._check_bet(interaction, bet):
+        return
+
+    guild = interaction.guild
+    data, acc = _acc(guild.id, interaction.user.id)
+    if acc["balance"] < bet:
+        msg = f"Не хватает: ставка {_fmt(bet)}, у тебя {_fmt(acc['balance'])} {_currency(guild.id)}."
+        if edit:
+            await interaction.response.edit_message(content=msg, embed=None, view=None)
+        else:
+            await interaction.response.send_message(msg, ephemeral=True)
+        return
+
+    acc["balance"] -= bet
+    mine = [random.randint(1, 6), random.randint(1, 6)]
+    bots = [random.randint(1, 6), random.randint(1, 6)]
+    cur = _currency(guild.id)
+
+    if sum(mine) > sum(bots):
+        win = int(bet * 1.9)
+        acc["balance"] += win
+        title, color = "🎲 Победа!", 0x57F287
+        result = f"Выиграл **{_fmt(win - bet)} {cur}** чистыми."
+    elif sum(mine) == sum(bots):
+        acc["balance"] += bet
+        title, color = "🎲 Ничья", 0xFEE75C
+        result = "Ставка вернулась на счёт."
+    else:
+        title, color = "🎲 Проигрыш", 0xED4245
+        result = f"Потерял **{_fmt(bet)} {cur}**."
+
+    save(ECONOMY_FILE, data)
+    e = discord.Embed(
+        title=title,
+        description=(
+            f"Ты: 🎲 {mine[0]} + {mine[1]} = **{sum(mine)}**\n"
+            f"Бот: 🎲 {bots[0]} + {bots[1]} = **{sum(bots)}**\n\n"
+            f"{result}\nБаланс: **{_fmt(acc['balance'])} {cur}**"
+        ),
+        color=color,
+        timestamp=datetime.datetime.now(),
+    )
+    view = DiceRematchView(bet) if acc["balance"] >= bet else None
+    if edit:
+        await interaction.response.edit_message(embed=e, view=view)
+    else:
+        await interaction.response.send_message(embed=e, view=view)
+
+
+# ── Слоты ─────────────────────────────────────────────────────────────────────
+
+class SlotsRematchView(discord.ui.View):
+    def __init__(self, bet: int):
+        super().__init__(timeout=120, disable_on_timeout=True)
+        self.bet = bet
+
+    @discord.ui.button(label="🔄 Крутить ещё", style=discord.ButtonStyle.primary)
+    async def again(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await play_slots(interaction, self.bet, edit=True)
+
+
+async def play_slots(interaction: discord.Interaction, bet: int, edit: bool = False):
+    if not edit and not await GameBase._check_bet(interaction, bet):
+        return
+
+    guild = interaction.guild
+    data, acc = _acc(guild.id, interaction.user.id)
+    if acc["balance"] < bet:
+        msg = f"Не хватает: ставка {_fmt(bet)}, у тебя {_fmt(acc['balance'])} {_currency(guild.id)}."
+        if edit:
+            await interaction.response.edit_message(content=msg, embed=None, view=None)
+        else:
+            await interaction.response.send_message(msg, ephemeral=True)
+        return
+
+    acc["balance"] -= bet
+    reels = [random.choice(SLOTS_EMOJIS) for _ in range(3)]
+    cur = _currency(guild.id)
+
+    if reels[0] == reels[1] == reels[2]:
+        win = int(bet * 10)
+        title, color = "🎰 ДЖЕКПОТ!", 0xFEE75C
+        result = f"Три в ряд — x10! Выиграл **{_fmt(win)} {cur}**."
+        acc["balance"] += win
+    elif len(set(reels)) == 2:
+        win = int(bet * 1.5)
+        title, color = "🎰 Почти!", 0x57F287
+        result = f"Два в ряд — x1.5. Выиграл **{_fmt(win - bet)} {cur}** чистыми."
+        acc["balance"] += win
+    else:
+        title, color = "🎰 Мимо", 0xED4245
+        result = f"Потерял **{_fmt(bet)} {cur}**."
+
+    save(ECONOMY_FILE, data)
+    e = discord.Embed(
+        title=title,
+        description=(
+            f"# {' ┃ '.join(reels)}\n\n"
+            f"{result}\nБаланс: **{_fmt(acc['balance'])} {cur}**"
+        ),
+        color=color,
+        timestamp=datetime.datetime.now(),
+    )
+    view = SlotsRematchView(bet) if acc["balance"] >= bet else None
+    if edit:
+        await interaction.response.edit_message(embed=e, view=view)
+    else:
+        await interaction.response.send_message(embed=e, view=view)
+
+
+# ── Монетка ───────────────────────────────────────────────────────────────────
+
+class FlipView(discord.ui.View):
+    def __init__(self, bet: int):
+        super().__init__(timeout=120, disable_on_timeout=True)
+        self.bet = bet
+
+    @discord.ui.button(label="Орёл", emoji="🦅", style=discord.ButtonStyle.primary)
+    async def heads(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await _do_flip(interaction, self.bet, "heads")
+
+    @discord.ui.button(label="Решка", emoji="🌙", style=discord.ButtonStyle.secondary)
+    async def tails(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await _do_flip(interaction, self.bet, "tails")
+
+
+async def _do_flip(interaction: discord.Interaction, bet: int, choice: str):
+    guild = interaction.guild
+    data, acc = _acc(guild.id, interaction.user.id)
+    if acc["balance"] < bet:
+        await interaction.response.edit_message(
+            content=f"Не хватает: ставка {_fmt(bet)}, у тебя {_fmt(acc['balance'])} {_currency(guild.id)}.",
+            embed=None, view=None,
+        )
+        return
+
+    acc["balance"] -= bet
+    side = random.choice(["heads", "tails"])
+    side_name = "Орёл 🦅" if side == "heads" else "Решка 🌙"
+    my_name = "Орёл 🦅" if choice == "heads" else "Решка 🌙"
+    cur = _currency(guild.id)
+
+    if choice == side:
+        win = int(bet * 1.9)
+        acc["balance"] += win
+        title, color = "🪙 Угадал!", 0x57F287
+        result = f"Выпало **{side_name}**. Выиграл **{_fmt(win - bet)} {cur}** чистыми."
+    else:
+        title, color = "🪙 Не угадал", 0xED4245
+        result = f"Выпало **{side_name}**, ты ставил на {my_name}. Потерял **{_fmt(bet)} {cur}**."
+
+    save(ECONOMY_FILE, data)
+    e = discord.Embed(
+        title=title,
+        description=f"{result}\nБаланс: **{_fmt(acc['balance'])} {cur}**",
+        color=color,
+        timestamp=datetime.datetime.now(),
+    )
+    view = FlipView(bet) if acc["balance"] >= bet else None
+    await interaction.response.edit_message(embed=e, view=view)
+
+
+# ── Камень-ножницы-бумага ─────────────────────────────────────────────────────
+
+class RPSView(discord.ui.View):
+    def __init__(self, bet: int):
+        super().__init__(timeout=120, disable_on_timeout=True)
+        self.bet = bet
+
+    @discord.ui.button(label="Камень", emoji="🪨", style=discord.ButtonStyle.secondary)
+    async def rock(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await _do_rps(interaction, self.bet, "rock")
+
+    @discord.ui.button(label="Бумага", emoji="📄", style=discord.ButtonStyle.secondary)
+    async def paper(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await _do_rps(interaction, self.bet, "paper")
+
+    @discord.ui.button(label="Ножницы", emoji="✂️", style=discord.ButtonStyle.secondary)
+    async def scissors(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await _do_rps(interaction, self.bet, "scissors")
+
+
+async def _do_rps(interaction: discord.Interaction, bet: int, choice: str):
+    guild = interaction.guild
+    data, acc = _acc(guild.id, interaction.user.id)
+    if acc["balance"] < bet:
+        await interaction.response.edit_message(
+            content=f"Не хватает: ставка {_fmt(bet)}, у тебя {_fmt(acc['balance'])} {_currency(guild.id)}.",
+            embed=None, view=None,
+        )
+        return
+
+    acc["balance"] -= bet
+    bot_choice = random.choice(list(RPS_CHOICES))
+    cur = _currency(guild.id)
+
+    if choice == bot_choice:
+        acc["balance"] += bet
+        title, color = "✌️ Ничья", 0xFEE75C
+        result = f"У бота тоже {RPS_CHOICES[bot_choice]}. Ставка вернулась."
+    elif RPS_BEATS[choice] == bot_choice:
+        win = int(bet * 2)
+        acc["balance"] += win
+        title, color = "🎉 Победа!", 0x57F287
+        result = f"У бота {RPS_CHOICES[bot_choice]}. Выиграл **{_fmt(bet)} {cur}** чистыми."
+    else:
+        title, color = "💀 Проигрыш", 0xED4245
+        result = f"У бота {RPS_CHOICES[bot_choice]}. Потерял **{_fmt(bet)} {cur}**."
+
+    save(ECONOMY_FILE, data)
+    e = discord.Embed(
+        title=title,
+        description=(
+            f"Ты: {RPS_CHOICES[choice]}\nБот: {RPS_CHOICES[bot_choice]}\n\n"
+            f"{result}\nБаланс: **{_fmt(acc['balance'])} {cur}**"
+        ),
+        color=color,
+        timestamp=datetime.datetime.now(),
+    )
+    view = RPSView(bet) if acc["balance"] >= bet else None
+    await interaction.response.edit_message(embed=e, view=view)
 
 
 async def setup(bot: commands.Bot):

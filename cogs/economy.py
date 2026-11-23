@@ -127,6 +127,15 @@ def _embed(title: str, description: str = None) -> discord.Embed:
     return e
 
 
+def _reply(embed: discord.Embed, view=None) -> dict:
+    """Аргументы ответа. view=None в send_message передавать нельзя —
+    discord.py зовёт у него is_finished() и падает."""
+    kwargs = {"embed": embed}
+    if view is not None:
+        kwargs["view"] = view
+    return kwargs
+
+
 # ── Настройки и доступ ────────────────────────────────────────────────────────
 
 def _settings(guild_id: int) -> dict:
@@ -1334,7 +1343,7 @@ async def play_dice(interaction: discord.Interaction, bet: int, edit: bool = Fal
     if edit:
         await interaction.response.edit_message(embed=e, view=view)
     else:
-        await interaction.response.send_message(embed=e, view=view)
+        await interaction.response.send_message(**_reply(e, view))
 
 
 # ── Слоты ─────────────────────────────────────────────────────────────────────
@@ -1393,7 +1402,7 @@ async def play_slots(interaction: discord.Interaction, bet: int, edit: bool = Fa
     if edit:
         await interaction.response.edit_message(embed=e, view=view)
     else:
-        await interaction.response.send_message(embed=e, view=view)
+        await interaction.response.send_message(**_reply(e, view))
 
 
 # ── Монетка ───────────────────────────────────────────────────────────────────

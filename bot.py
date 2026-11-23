@@ -46,9 +46,33 @@ async def on_ready():
             pass
     if not guild_id:
         guild_id = 1573386089467748482
+
+    guilds = ", ".join(f"{g.id} ({g.name})" for g in bot.guilds) or "ни одного"
+    log.info("Подключён как %s. Серверы бота: %s", bot.user, guilds)
+
     guild = discord.Object(id=guild_id)
+    if guild_id not in {g.id for g in bot.guilds}:
+        log.error(
+            "Гильдии %s нет в списке серверов бота. Либо GUILD_ID неверный, либо бота "
+            "пригласили на другой сервер. Команды не синхнутся.",
+            guild_id,
+        )
+
     bot.tree.copy_global_to(guild=guild)
-    synced = await bot.tree.sync(guild=guild)
+    try:
+        synced = await bot.tree.sync(guild=guild)
+    except discord.Forbidden:
+        log.error(
+            "Синк команд на гильдию %s запрещён: Missing Access (50001). "
+            "Скорее всего бота пригласили без scope applications.commands. "
+            "Перепригласи по ссылке: https://discord.com/oauth2/authorize?client_id=%s"
+            "&scope=bot%%20applications.commands&permissions=268520448",
+            guild_id, bot.application_id,
+        )
+        return
+    except Exception as e:
+        log.exception("Не удалось синкнуть команды: %s", e)
+        return
     log.info("Economy-бот запущен: %s | Синкнуто %d команд на гильдию %d", bot.user, len(synced), guild_id)
 
 

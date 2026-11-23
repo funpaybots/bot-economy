@@ -1301,7 +1301,12 @@ class Economy(commands.Cog):
             f"Кто-то обронил **{_fmt(amount)} {cur}**.\nКто первый нажал — того и монеты.",
         )
         try:
-            await channel.send(embed=e, view=DropView(amount, cur))
+            await channel.send(
+                embed=e,
+                view=DropView(amount, cur),
+                # Дроп живёт 3 минуты на кнопке; ещё 2 минуты — чтобы успеть увидеть итог
+                delete_after=DROP_TTL + 120,
+            )
         except discord.Forbidden:
             log.warning("Нет прав на отправку дропа в канал %s", cid)
 

@@ -6,6 +6,7 @@
 """
 
 import asyncio
+import datetime
 import os
 import sys
 import tempfile
@@ -87,9 +88,22 @@ class FakeInteraction:
 
 
 # Проиграл всё: рематч-кнопки нет, и ответ не должен падать
+# Кубики подменяем, иначе тест зависит от удачи: 1+1 против 6+6 — проигрыш.
+def _forced_dice(mine_a, mine_b, bot_a, bot_b):
+    """Подменяет random.randint на последовательность бросков."""
+    values = iter([mine_a, mine_b, bot_a, bot_b])
+    orig = eco.random.randint
+    eco.random.randint = lambda a, b: next(values)
+    return orig
+
+
 storage.save(eco.ECONOMY_FILE, {"1": {"1": {"balance": 100}}})
 interaction = FakeInteraction(1, 1)
-asyncio.run(eco.play_dice(interaction, 100))
+_orig = _forced_dice(1, 1, 6, 6)
+try:
+    asyncio.run(eco.play_dice(interaction, 100))
+finally:
+    eco.random.randint = _orig
 if interaction.response.kwargs is None:
     fail("play_dice не ответил")
 elif "view" in interaction.response.kwargs:
@@ -100,11 +114,89 @@ else:
 # Есть деньги: кнопка «ещё» приходит
 storage.save(eco.ECONOMY_FILE, {"1": {"1": {"balance": 1000}}})
 interaction = FakeInteraction(1, 1)
-asyncio.run(eco.play_dice(interaction, 100))
+_orig = _forced_dice(1, 1, 6, 6)
+try:
+    asyncio.run(eco.play_dice(interaction, 100))
+finally:
+    eco.random.randint = _orig
 if "view" not in interaction.response.kwargs:
     fail("play_dice не выдал кнопку рематча")
 else:
     print("OK   /dice с деньгами на повтор")
+
+
+# ── Чистка своих сообщений ────────────────────────────────────────────────
+
+class FakePerms:
+    def __init__(self, manage_messages=True):
+        self.manage_messages = manage_messages
+
+
+class FakeMsg:
+    def __init__(self, mid, author_id, age_sec, pinned=False):
+        self.id = mid
+        self.author = type("A", (), {"id": author_id})()
+        self.created_at = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(seconds=age_sec)
+        self.pinned = pinned
+        self.deleted = False
+
+    async def delete(self):
+        self.deleted = True
+
+
+class FakeHistory:
+    def __init__(self, messages):
+        self._messages = messages
+
+    def __aiter__(self):
+        self._it = iter(self._messages)
+        return self
+
+    async def __anext__(self):
+        try:
+            return next(self._it)
+        except StopIteration:
+            raise StopAsyncIteration
+
+
+class FakeCleanChannel:
+    def __init__(self, messages, manage_messages=True):
+        self.id = 4242
+        self.name = "🧺--корзина"
+        self._messages = messages
+        self._manage = manage_messages
+        self.guild = type("G", (), {"me": type("M", (), {"id": 999})()})()
+
+    def permissions_for(self, member):
+        return FakePerms(self._manage)
+
+    def history(self, limit=None):
+        return FakeHistory(self._messages)
+
+
+bot_id = 999
+messages = [
+    FakeMsg(1, bot_id, 3600),          # старое своё — удалить
+    FakeMsg(2, bot_id, 60),            # свежее своё — оставить
+    FakeMsg(3, 42, 3600),              # чужое — оставить
+    FakeMsg(4, bot_id, 3600, True),    # своё, но закреплено — оставить
+]
+channel = FakeCleanChannel(messages)
+removed = asyncio.run(eco._purge_bot_messages(channel))
+if removed != 1:
+    fail(f"чистка удалила {removed}, ожидалось 1")
+elif not messages[0].deleted:
+    fail("чистка не удалила старое своё сообщение")
+elif any(m.deleted for m in messages[1:]):
+    fail("чистка тронула лишнее (свежее/чужое/закреп)")
+else:
+    print("OK   чистка: только старое своё, не закреплённое")
+
+no_perms = asyncio.run(eco._purge_bot_messages(FakeCleanChannel(messages, manage_messages=False)))
+if no_perms != 0:
+    fail("чистка без прав manage_messages всё равно удаляла")
+else:
+    print("OK   чистка без прав ничего не трогает")
 
 print(f"\nПровалов: {failed}")
 sys.exit(1 if failed else 0)

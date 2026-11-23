@@ -2,6 +2,7 @@
 """Экономика: монеты, дейли со стриком, работа, переводы, магазин, игры,
 кейсы, ограбления, дуэли, квесты, дропы в чате, сезоны и статистика."""
 
+import asyncio
 import datetime
 import logging
 import random
@@ -44,6 +45,12 @@ ROB_MIN_VICTIM = 50
 
 DROP_MIN, DROP_MAX = 50, 200
 DEFAULT_DROP_EVERY = 200
+DROP_TTL = 180                 # сколько секунд висит сообщение о дропе
+
+# Чистка своих сообщений в каналах экономики: чтобы не засирать чат
+CLEANUP_AFTER = 600            # удалять свои сообщения старше 10 минут
+CLEANUP_SCAN = 500             # сколько последних сообщений просматривать за проход
+CLEANUP_PER_RUN = 50           # максимум удалений за проход на канал (лимиты Discord)
 
 BET_MIN = 10
 DEFAULT_MAX_BET = 1000
@@ -169,15 +176,76 @@ def _drop_every(guild_id: int) -> int:
     return max(20, int(_settings(guild_id).get("drop_every", DEFAULT_DROP_EVERY)))
 
 
+async def _purge_bot_messages(channel, older_than: float = CLEANUP_AFTER) -> int:
+    """Удаляет старые сообщения самого бота в канале экономики.
+
+    Свои сообщения не жалко: ответы на /balance, итоги игр, дропы после
+    таймаута и прочее. Чужие сообщения и закреплённые не трогаем.
+    Возвращает число удалённых.
+    """
+    guild = getattr(channel, "guild", None)
+    me = getattr(guild, "me", None)
+    if me is None:
+        return 0
+    try:
+        perms = channel.permissions_for(me)
+    except Exception:
+        return 0
+    if not getattr(perms, "manage_messages", False):
+        return 0
+
+    cutoff = time.time() - older_than
+    deleted = 0
+    try:
+        async for msg in channel.history(limit=CLEANUP_SCAN):
+            if msg.author.id != me.id or msg.pinned:
+                continue
+            try:
+                created = msg.created_at.timestamp()
+            except Exception:
+                continue
+            if created > cutoff:
+                continue
+            try:
+                await msg.delete()
+                deleted += 1
+            except (discord.NotFound, discord.Forbidden):
+                continue
+            except discord.HTTPException:
+                log.warning("Не смог удалить своё сообщение %s в канале %s", msg.id, channel.id)
+                continue
+            if deleted >= CLEANUP_PER_RUN:
+                break
+    except (discord.Forbidden, discord.HTTPException) as e:
+        log.warning("Чистка канала %s не удалась: %s", getattr(channel, "id", "?"), e)
+    return deleted
+
+
+def _clean_name(name: str) -> str:
+    return re.sub(r"[^а-яa-z0-9]", "", (name or "").lower())
+
+
+def _looks_like_eco(name: str) -> bool:
+    clean = _clean_name(name)
+    return "карзин" in clean or "корзин" in clean
+
+
+def _economy_channel_ids(guild) -> list:
+    """ID каналов экономики/дропов. Если не настроены — ищем по имени,
+    как это делает гейт команд."""
+    ids = [cid for cid in (_eco_channel(guild.id), _drop_channel(guild.id)) if cid]
+    if ids:
+        return ids
+    return [ch.id for ch in guild.text_channels if _looks_like_eco(ch.name)]
+
+
 def _is_allowed(interaction: discord.Interaction) -> bool:
     if interaction.guild is None:
         return False
     cid = _eco_channel(interaction.guild.id)
     if cid:
         return interaction.channel_id == cid
-    name = getattr(interaction.channel, "name", "") or ""
-    clean = re.sub(r"[^а-яa-z0-9]", "", name.lower())
-    return "карзин" in clean or "корзин" in clean
+    return _looks_like_eco(getattr(interaction.channel, "name", ""))
 
 
 async def _eco_predicate(interaction: discord.Interaction) -> bool:
@@ -475,9 +543,11 @@ class Economy(commands.Cog):
 
     async def cog_load(self):
         self._flush_stats.start()
+        self._autoclean.start()
 
     async def cog_unload(self):
         self._flush_stats.cancel()
+        self._autoclean.cancel()
         _stats_save(force=True)
 
     @tasks.loop(seconds=60)
@@ -486,6 +556,29 @@ class Economy(commands.Cog):
 
     @_flush_stats.before_loop
     async def _before_flush(self):
+        await self.bot.wait_until_ready()
+
+    # ── Чистка своих сообщений ────────────────────────────────────────────
+
+    @tasks.loop(minutes=5)
+    async def _autoclean(self):
+        for guild in self.bot.guilds:
+            channels = []
+            for cid in _economy_channel_ids(guild):
+                channel = guild.get_channel(cid)
+                if channel is not None and channel not in channels:
+                    channels.append(channel)
+            for channel in channels:
+                try:
+                    removed = await _purge_bot_messages(channel)
+                except Exception:
+                    log.exception("Чистка канала %s упала", channel.id)
+                    continue
+                if removed:
+                    log.info("Чистка %s: удалено своих сообщений — %d", channel.name, removed)
+
+    @_autoclean.before_loop
+    async def _before_autoclean(self):
         await self.bot.wait_until_ready()
 
     # ── Баланс ────────────────────────────────────────────────────────────

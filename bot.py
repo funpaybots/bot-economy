@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 import asyncio, json, logging, os, sys
 import discord
+from discord import app_commands
 from discord.ext import commands
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -53,8 +54,17 @@ async def on_ready():
 
 @bot.tree.error
 async def on_app_command_error(interaction: discord.Interaction, error):
-    log.exception("Ошибка команды /%s", getattr(interaction.command, "name", "?"), exc_info=error)
-    msg = f"⚠️ Ошибка: `{type(error).__name__}: {error}`"
+    name = getattr(interaction.command, "name", "?")
+    if isinstance(error, app_commands.MissingPermissions):
+        msg = "⛔ Нужны права на управление сервером (или администратор)."
+    elif isinstance(error, app_commands.CheckFailure):
+        msg = "🧺 Эта команда работает только в канале экономики («карзина»)."
+    elif isinstance(error, app_commands.CommandOnCooldown):
+        msg = f"⏳ Слишком часто. Подожди {error.retry_after:.0f} сек."
+    else:
+        log.error("Ошибка команды /%s: %s", name, error)
+        log.debug("Трейсбек:", exc_info=error)
+        msg = f"⚠️ Ошибка: `{type(error).__name__}: {error}`"
     try:
         if interaction.response.is_done():
             await interaction.followup.send(msg, ephemeral=True)

@@ -315,7 +315,21 @@ def _case_face(mult: float) -> str:
 
 # ── Дропы ─────────────────────────────────────────────────────────────────────
 
-class DropView(discord.ui.View):
+class TimeoutView(discord.ui.View):
+    """Вью, которая по таймауту гасит кнопки своего сообщения."""
+
+    async def on_timeout(self):
+        for child in self.children:
+            child.disabled = True
+        message = getattr(self, "message", None)
+        if message is not None:
+            try:
+                await message.edit(view=self)
+            except discord.HTTPException:
+                pass
+
+
+class DropView(TimeoutView):
     def __init__(self, amount: int, currency: str):
         super().__init__(timeout=180)
         self.amount = amount
@@ -343,7 +357,7 @@ class DropView(discord.ui.View):
 
 # ── Дуэль ─────────────────────────────────────────────────────────────────────
 
-class DuelView(discord.ui.View):
+class DuelView(TimeoutView):
     def __init__(self, challenger_id: int, opponent_id: int, bet: int):
         super().__init__(timeout=120)
         self.challenger_id = challenger_id
@@ -406,7 +420,7 @@ class DuelView(discord.ui.View):
 
 # ── Квесты ────────────────────────────────────────────────────────────────────
 
-class QuestView(discord.ui.View):
+class QuestView(TimeoutView):
     def __init__(self, guild_id: int, user_id: int):
         super().__init__(timeout=300)
         self.guild_id = guild_id
@@ -1262,9 +1276,9 @@ class GameBase:
 
 # ── Кости ─────────────────────────────────────────────────────────────────────
 
-class DiceRematchView(discord.ui.View):
+class DiceRematchView(TimeoutView):
     def __init__(self, bet: int):
-        super().__init__(timeout=120, disable_on_timeout=True)
+        super().__init__(timeout=120)
         self.bet = bet
 
     @discord.ui.button(label="🎲 Кинуть ещё", style=discord.ButtonStyle.primary)
@@ -1325,9 +1339,9 @@ async def play_dice(interaction: discord.Interaction, bet: int, edit: bool = Fal
 
 # ── Слоты ─────────────────────────────────────────────────────────────────────
 
-class SlotsRematchView(discord.ui.View):
+class SlotsRematchView(TimeoutView):
     def __init__(self, bet: int):
-        super().__init__(timeout=120, disable_on_timeout=True)
+        super().__init__(timeout=120)
         self.bet = bet
 
     @discord.ui.button(label="🔄 Крутить ещё", style=discord.ButtonStyle.primary)
@@ -1384,9 +1398,9 @@ async def play_slots(interaction: discord.Interaction, bet: int, edit: bool = Fa
 
 # ── Монетка ───────────────────────────────────────────────────────────────────
 
-class FlipView(discord.ui.View):
+class FlipView(TimeoutView):
     def __init__(self, bet: int):
-        super().__init__(timeout=120, disable_on_timeout=True)
+        super().__init__(timeout=120)
         self.bet = bet
 
     @discord.ui.button(label="Орёл", emoji="🦅", style=discord.ButtonStyle.primary)
@@ -1437,9 +1451,9 @@ async def _do_flip(interaction: discord.Interaction, bet: int, choice: str):
 
 # ── Камень-ножницы-бумага ─────────────────────────────────────────────────────
 
-class RPSView(discord.ui.View):
+class RPSView(TimeoutView):
     def __init__(self, bet: int):
-        super().__init__(timeout=120, disable_on_timeout=True)
+        super().__init__(timeout=120)
         self.bet = bet
 
     @discord.ui.button(label="Камень", emoji="🪨", style=discord.ButtonStyle.secondary)

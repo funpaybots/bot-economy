@@ -788,17 +788,25 @@ class Economy(commands.Cog):
             )
             return
 
+        # Списание ДО сетевого вызова: между load и save не должно быть await,
+        # иначе сохранение устаревшей копии затирает чужие начисления
+        # (дейли, переводы и т.п.), произошедшие во время выдачи роли.
+        acc["balance"] -= price
+        save(ECONOMY_FILE, data)
+
         try:
             await member.add_roles(role, reason=f"Покупка в магазине ({interaction.user})")
         except discord.Forbidden:
+            # Возврат: свежая загрузка, чтобы не перезаписать чужие изменения.
+            data2, acc2 = _acc(interaction.guild.id, member.id)
+            acc2["balance"] = int(acc2.get("balance", 0)) + price
+            save(ECONOMY_FILE, data2)
             await interaction.response.send_message(
-                "Не смог выдать роль — нет права «Управлять ролями» или роль выше моей.",
+                "Не смог выдать роль — нет права «Управлять ролями» или роль выше моей. Монеты вернул.",
                 ephemeral=True,
             )
             return
 
-        acc["balance"] -= price
-        save(ECONOMY_FILE, data)
         await interaction.response.send_message(
             embed=_embed(
                 "🛒 Покупка",

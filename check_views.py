@@ -198,5 +198,25 @@ if no_perms != 0:
 else:
     print("OK   чистка без прав ничего не трогает")
 
+
+# ── Гонка баланса в /buy ──────────────────────────────────────────────────
+# Между загрузкой экономики и сохранением не должно быть await, иначе
+# сохранение устаревшей копии затирает чужие начисления.
+
+import inspect  # noqa: E402
+
+buy_src = inspect.getsource(eco.Economy.buy.callback)
+save_pos = buy_src.find("save(ECONOMY_FILE, data)")
+roles_pos = buy_src.find("add_roles")
+if save_pos == -1 or roles_pos == -1 or save_pos > roles_pos:
+    fail("/buy: списание должно сохраняться ДО await add_roles")
+else:
+    print("OK   /buy: списание до выдачи роли, гонки баланса нет")
+
+if "data2" not in buy_src or "_acc(" not in buy_src.split("except discord.Forbidden")[1]:
+    fail("/buy: нет возврата монет со свежей загрузкой при Forbidden")
+else:
+    print("OK   /buy: возврат монет при ошибке выдачи роли")
+
 print(f"\nПровалов: {failed}")
 sys.exit(1 if failed else 0)

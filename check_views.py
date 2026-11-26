@@ -218,5 +218,18 @@ if "data2" not in buy_src or "_acc(" not in buy_src.split("except discord.Forbid
 else:
     print("OK   /buy: возврат монет при ошибке выдачи роли")
 
+defer_pos = buy_src.find("response.defer")
+if defer_pos == -1 or defer_pos > roles_pos:
+    fail("/buy: defer должен стоять до сетевой выдачи роли")
+else:
+    print("OK   /buy: defer до add_roles, 3 секунды не пробивает")
+
+import version as _version  # noqa: E402
+
+if eco.BUILD != _version.BUILD or "сборка {BUILD}" not in inspect.getsource(eco.Economy.balance.callback):
+    fail("метка сборки не видна в /balance")
+else:
+    print(f"OK   метка сборки в /balance: {eco.BUILD}")
+
 print(f"\nПровалов: {failed}")
 sys.exit(1 if failed else 0)

@@ -6,6 +6,7 @@ from discord.ext import commands
 
 import backup
 from backup import backup_loop
+from version import BUILD
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(BASE_DIR, "config.json")
@@ -92,7 +93,7 @@ async def on_ready():
     except Exception as e:
         log.exception("Не удалось синкнуть команды: %s", e)
         return
-    log.info("Economy-бот запущен: %s | Синкнуто %d команд на гильдию %d", bot.user, len(synced), guild_id)
+    log.info("Economy-бот запущен: %s | Синкнуто %d команд на гильдию %d | сборка %s", bot.user, len(synced), guild_id, BUILD)
     _synced_once = True
 
 

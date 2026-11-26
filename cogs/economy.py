@@ -14,6 +14,7 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 from storage import load, save
+from version import BUILD
 
 log = logging.getLogger(__name__)
 
@@ -607,6 +608,7 @@ class Economy(commands.Cog):
             value="✅ можно работать (/work)" if work_left <= 0 else f"⏳ через {_human_left(work_left)}",
         )
         e.add_field(name="Стрик дейлика", value=f"🔥 {acc.get('daily_streak', 0)} дн.", inline=False)
+        e.set_footer(text=f"сборка {BUILD}")
         await interaction.response.send_message(embed=e)
 
     # ── Дейлик ────────────────────────────────────────────────────────────
@@ -794,6 +796,9 @@ class Economy(commands.Cog):
         acc["balance"] -= price
         save(ECONOMY_FILE, data)
 
+        # Дальше сетевой вызов выдачи роли — останавливаем таймер ответа Discord.
+        await interaction.response.defer()
+
         try:
             await member.add_roles(role, reason=f"Покупка в магазине ({interaction.user})")
         except discord.Forbidden:
@@ -801,13 +806,13 @@ class Economy(commands.Cog):
             data2, acc2 = _acc(interaction.guild.id, member.id)
             acc2["balance"] = int(acc2.get("balance", 0)) + price
             save(ECONOMY_FILE, data2)
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "Не смог выдать роль — нет права «Управлять ролями» или роль выше моей. Монеты вернул.",
                 ephemeral=True,
             )
             return
 
-        await interaction.response.send_message(
+        await interaction.followup.send(
             embed=_embed(
                 "🛒 Покупка",
                 f"{member.mention} купил {role.mention} за **{_fmt(price)} {cur}**.\n"

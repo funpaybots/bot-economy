@@ -1815,6 +1815,34 @@ def _bj_blackjack(cards) -> bool:
     return len(cards) == 2 and _bj_value(cards) == 21
 
 
+def _bj_cells(cards, reveal_all: bool) -> list:
+    """Тексты карт для таблицы: у дилера все карты, кроме первой, скрыты."""
+    texts = []
+    for i, (rank, suit) in enumerate(cards):
+        if not reveal_all and i > 0:
+            texts.append("??")
+        else:
+            texts.append(_card(rank, suit))
+    return texts
+
+
+def _bj_box(cells, value_text: str = "", color: str = "") -> str:
+    """Карты в рамках, выровнено по моноширинной сетке.
+
+    color — ANSI-код Discord ('0;32' зелёный, '0;31' красный, '0;33' жёлтый).
+    """
+    padded = [f" {c:>3} " for c in cells]
+    top = "┌" + "┬".join("─" * len(c) for c in padded) + "┐"
+    row = "│" + "│".join(padded) + "│"
+    if value_text:
+        row += f"  → {value_text}"
+    bottom = "└" + "┴".join("─" * len(c) for c in padded) + "┘"
+    body = top + "\n" + row + "\n" + bottom
+    if color:
+        body = f"\u001b[{color}m" + body + "\u001b[0m"
+    return body
+
+
 def _mines_multiplier(mines: int, opened: int) -> float:
     """Честный множитель за opened открытых клеток при mines минах (маржа 3%)."""
     if opened <= 0:
@@ -1892,13 +1920,26 @@ class BlackjackView(TimeoutView):
 
     def render_embed(self) -> discord.Embed:
         cur = _currency(self.guild_id)
-        hidden = f"{_card(*self.dealer[0])} 🂠"
-        desc = (
-            f"Твои карты: {_cards_text(self.player)} → **{_bj_value(self.player)}**\n"
-            f"Дилер: {hidden} → **{_bj_value(self.dealer[:1])}**\n\n"
-            f"Ставка: **{_fmt(self.bet)} {cur}**"
+        dealer_box = _bj_box(
+            _bj_cells(self.dealer, reveal_all=False),
+            f"{_bj_value(self.dealer[:1])}+?",
         )
-        return _embed("🃏 Блэкджек", desc)
+        player_value = _bj_value(self.player)
+        player_box = _bj_box(
+            _bj_cells(self.player, reveal_all=True),
+            f"{player_value} ← БЛЭКДЖЕК" if _bj_blackjack(self.player) else str(player_value),
+        )
+        table = (
+            "```ansi\n"
+            "🂠 ДИЛЕР\n" + dealer_box + "\n\n"
+            "👤 ТЫ\n" + player_box + "\n"
+            "```"
+        )
+        hint = (
+            f"Ставка: **{_fmt(self.bet)} {cur}** · "
+            f"блэкджек платит x{BLACKJACK_PAYOUT:g} · дилер добирает до 17"
+        )
+        return _embed("🃏 Блэкджек", f"{table}\n{hint}")
 
     def dealer_play(self) -> None:
         while _bj_value(self.dealer) < 17:
@@ -1916,31 +1957,43 @@ class BlackjackView(TimeoutView):
         dealer_bj = _bj_blackjack(self.dealer)
 
         if player_value > 21:
-            color, result = 0xED4245, f"Перебор ({player_value}). Потерял **{_fmt(self.bet)} {cur}**."
+            outcome, color = "lose", 0xED4245
+            result = f"💀 ПЕРЕБОР — −{_fmt(self.bet)} {cur}"
         elif dealer_bj and not player_bj:
-            color, result = 0xED4245, f"У дилера блэкджек. Потерял **{_fmt(self.bet)} {cur}**."
+            outcome, color = "lose", 0xED4245
+            result = f"💀 У ДИЛЕРА БЛЭКДЖЕК — −{_fmt(self.bet)} {cur}"
         elif player_bj:
             win = int(self.bet * BLACKJACK_PAYOUT)
             acc["balance"] += win
-            color, result = 0xFEE75C, f"Блэкджек! Выиграл **{_fmt(win - self.bet)} {cur}** чистыми."
+            outcome, color = "win", 0xFEE75C
+            result = f"🎉 БЛЭКДЖЕК! +{_fmt(win - self.bet)} {cur}"
         elif dealer_value > 21 or player_value > dealer_value:
             acc["balance"] += self.bet * 2
-            color, result = 0x57F287, f"Победа {player_value} против {dealer_value}. Выиграл **{_fmt(self.bet)} {cur}**."
+            outcome, color = "win", 0x57F287
+            result = f"🎉 ПОБЕДА +{_fmt(self.bet)} {cur}"
         elif player_value == dealer_value:
             acc["balance"] += self.bet
-            color, result = 0xFEE75C, "Ничья — ставка вернулась."
+            outcome, color = "push", 0xFEE75C
+            result = "🤝 НИЧЬЯ — ставка вернулась"
         else:
-            color, result = 0xED4245, f"Дилер сильнее ({dealer_value} против {player_value}). Потерял **{_fmt(self.bet)} {cur}**."
+            outcome, color = "lose", 0xED4245
+            result = f"💀 ПРОИГРЫШ — −{_fmt(self.bet)} {cur}"
 
         _bump(acc, "games")
         save(ECONOMY_FILE, data)
+
+        ansi = {"win": "0;32", "push": "0;33", "lose": "0;31"}[outcome]
+        dealer_box = _bj_box(_bj_cells(self.dealer, reveal_all=True), str(dealer_value), ansi)
+        player_box = _bj_box(_bj_cells(self.player, reveal_all=True), str(player_value), ansi)
+        table = (
+            "```ansi\n"
+            "🂠 ДИЛЕР\n" + dealer_box + "\n\n"
+            "👤 ТЫ\n" + player_box + "\n"
+            "```"
+        )
         e = discord.Embed(
             title="🃏 Блэкджек",
-            description=(
-                f"Ты: {_cards_text(self.player)} → **{player_value}**\n"
-                f"Дилер: {_cards_text(self.dealer)} → **{dealer_value}**\n\n"
-                f"{result}\nБаланс: **{_fmt(acc['balance'])} {cur}**"
-            ),
+            description=f"{table}\n**{result}**\nБаланс: **{_fmt(acc['balance'])} {cur}**",
             color=color,
             timestamp=datetime.datetime.now(),
         )
@@ -1950,7 +2003,7 @@ class BlackjackView(TimeoutView):
             except discord.HTTPException:
                 pass
 
-    @discord.ui.button(label="Ещё", emoji="➕", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="Ещё", emoji="🃏", style=discord.ButtonStyle.primary)
     async def hit(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.user_id:
             await interaction.response.send_message("Это чужая раздача.", ephemeral=True)
@@ -1965,7 +2018,7 @@ class BlackjackView(TimeoutView):
         else:
             await self.message.edit(embed=self.render_embed(), view=self)
 
-    @discord.ui.button(label="Хватит", emoji="✋", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="Хватит", emoji="🛑", style=discord.ButtonStyle.secondary)
     async def stand(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.user_id:
             await interaction.response.send_message("Это чужая раздача.", ephemeral=True)

@@ -37,6 +37,21 @@ check("bj not blackjack with 3 cards", not eco._bj_blackjack([(7, "♠"), (7, "�
 check("bj not blackjack at 20", not eco._bj_blackjack([(9, "♠"), (13, "♥")]))
 check("bj ace+face+8 = 19", eco._bj_value([(14, "♠"), (12, "♥"), (8, "♦")]) == 19)
 
+# Оформление: рамки, выравнивание, ANSI-цвета
+box = eco._bj_box(["A♠", "10♦"], "21")
+lines = box.split("\n")
+check("bj box three lines", len(lines) == 3)
+check("bj box borders aligned", len(lines[0]) == len(lines[2]) == 13, f"{len(lines[0])}/{len(lines[2])}")
+check("bj box shows cards", "A♠" in lines[1] and "10♦" in lines[1])
+check("bj box shows value", lines[1].endswith("→ 21"))
+check("bj box green ansi", eco._bj_box(["A♠"], "21", "0;32").startswith("\u001b[0;32m"))
+dealer_cells = eco._bj_cells([(9, "♦"), (13, "♥")], reveal_all=False)
+check("bj dealer hides all but first", dealer_cells == ["9♦", "??"])
+check("bj ten is three chars", len(eco._bj_cells([(10, "♦")], True)[0]) == 3)
+bj_view = eco.BlackjackView(1, 2, 10, [(2, "♠"), (3, "♥")], [(4, "♦"), (5, "♣")])
+bj_emb = bj_view.render_embed()
+check("bj play embed has table", "```ansi" in bj_emb.description and "ДИЛЕР" in bj_emb.description and "??" in bj_emb.description)
+
 # ── Мины ──────────────────────────────────────────────────────────────────────
 
 check("mines empty multiplier is 1", eco._mines_multiplier(3, 0) == 1.0)

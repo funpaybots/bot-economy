@@ -26,6 +26,12 @@ CASES = [
     (eco.SlotsRematchView, (10,)),
     (eco.FlipView, (10,)),
     (eco.RPSView, (10,)),
+    (eco.BlackjackView, (1, 2, 10, [(2, "♠"), (3, "♥")], [(4, "♦"), (5, "♣")])),
+    (eco.MinesView, (1, 2, 10, 3)),
+    (eco.CrashView, (1, 2, 10)),
+    (eco.HighLowView, (1, 2, 10, (7, "♠"))),
+    (eco.TicTacToeView, (1, 10, 2, 3)),
+    (eco.TicTacToeChallengeView, (1, 2, 3, 10)),
 ]
 
 failed = 0
@@ -50,8 +56,8 @@ for cls, args in CASES:
 
 commands = eco.Economy.__cog_app_commands__
 print(f"\nКоманд в коге: {len(commands)}")
-if len(commands) != 27:
-    fail("ожидалось 27 команд — проверь декораторы/отступы")
+if len(commands) != 33:
+    fail("ожидалось 33 команды — проверь декораторы/отступы")
 
 if "баланс" not in eco.Economy.balance.description.lower():
     fail(f"кодировка: {eco.Economy.balance.description!r}")

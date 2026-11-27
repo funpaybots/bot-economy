@@ -1051,7 +1051,13 @@ class Economy(commands.Cog):
             "Три в ряд x10, два в ряд x1.5\n\n"
             "🪙 **/flip ставка** — угадай орёл или решка. Угадал x1.9\n\n"
             "✌️ **/rps ставка** — камень-ножницы-бумага против бота. Победа x2\n\n"
+            "🃏 **/blackjack ставка** — 21 очко против дилера. Блэкджек x2.5\n"
+            "💣 **/mines ставка [мин]** — открывай клетки, множитель растёт, забирай в любой момент\n"
+            "🚀 **/crash ставка** — множитель тикает вверх, успей забрать до краша\n"
+            "🎡 **/roulette ставка цвет** — красное/чёрное x2, зеро x30\n"
+            "📈 **/highlow ставка** — угадай, выше или ниже следующая карта\n\n"
             "⚔️ **/duel @ник ставка** — дуэль, победитель забирает банк\n"
+            "⭕ **/ttt @ник ставка** — крестики-нолики, победитель забирает банк\n"
             "🎁 **/case** — кейс за монеты, внутри до x10\n"
             "🕵️ **/rob @ник** — ограбление, шанс 40%",
         )
@@ -1095,6 +1101,129 @@ class Economy(commands.Cog):
             f"Ставка: **{_fmt(bet)} {_currency(interaction.guild.id)}**\nДелай ход:",
         )
         await interaction.response.send_message(embed=e, view=RPSView(bet))
+
+    @app_commands.command(name="blackjack", description="Блэкджек: набери 21 и не перебери")
+    @app_commands.describe(bet="Ставка")
+    @eco_only
+    async def blackjack(self, interaction: discord.Interaction, bet: app_commands.Range[int, 1]):
+        await play_blackjack(interaction, bet)
+
+    @app_commands.command(name="mines", description="Мины: открывай клетки, множитель растёт")
+    @app_commands.describe(bet="Ставка", mines="Сколько мин на поле (по умолчанию 3)")
+    @eco_only
+    async def mines(
+        self,
+        interaction: discord.Interaction,
+        bet: app_commands.Range[int, 1],
+        mines: app_commands.Range[int, 1, 15] = 3,
+    ):
+        if not await GameBase._check_bet(interaction, bet):
+            return
+        view = MinesView(interaction.guild.id, interaction.user.id, bet, mines)
+        await interaction.response.send_message(embed=view.render_embed(), view=view)
+        view.message = await interaction.original_response()
+
+    @app_commands.command(name="crash", description="Краш: множитель растёт, успей забрать")
+    @app_commands.describe(bet="Ставка")
+    @eco_only
+    async def crash(self, interaction: discord.Interaction, bet: app_commands.Range[int, 1]):
+        if not await GameBase._check_bet(interaction, bet):
+            return
+        guild = interaction.guild
+        data, acc = _acc(guild.id, interaction.user.id)
+        acc["balance"] -= bet
+        save(ECONOMY_FILE, data)
+        view = CrashView(guild.id, interaction.user.id, bet)
+        await interaction.response.send_message(embed=view.render_embed(), view=view)
+        view.message = await interaction.original_response()
+        view.start()
+
+    @app_commands.command(name="roulette", description="Рулетка: красное x2, чёрное x2, зеро x30")
+    @app_commands.describe(bet="Ставка", choice="На что ставишь")
+    @app_commands.choices(
+        choice=[
+            app_commands.Choice(name="Красное — x2", value="красное"),
+            app_commands.Choice(name="Чёрное — x2", value="чёрное"),
+            app_commands.Choice(name="Зеро — x30", value="зеро"),
+        ]
+    )
+    @eco_only
+    async def roulette(
+        self,
+        interaction: discord.Interaction,
+        bet: app_commands.Range[int, 1],
+        choice: str,
+    ):
+        if not await GameBase._check_bet(interaction, bet):
+            return
+        guild = interaction.guild
+        cur = _currency(guild.id)
+        data, acc = _acc(guild.id, interaction.user.id)
+        acc["balance"] -= bet
+        spin = random.randint(0, 36)
+        mult = _roulette_mult(choice, spin)
+        if mult:
+            acc["balance"] += int(bet * mult)
+        _bump(acc, "games")
+        save(ECONOMY_FILE, data)
+
+        color_name = _roulette_color(spin)
+        if mult:
+            title, color = "🎡 Угадал!", 0x57F287
+            result = f"Выпало **{spin} · {color_name}** — x{mult}. Выиграл **{_fmt(int(bet * mult) - bet)} {cur}** чистыми."
+        else:
+            title, color = "🎡 Не угадал", 0xED4245
+            result = f"Выпало **{spin} · {color_name}**, ты ставил на {choice}. Потерял **{_fmt(bet)} {cur}**."
+        e = discord.Embed(
+            title=title,
+            description=f"{result}\nБаланс: **{_fmt(acc['balance'])} {cur}**",
+            color=color,
+            timestamp=datetime.datetime.now(),
+        )
+        await interaction.response.send_message(embed=e)
+
+    @app_commands.command(name="highlow", description="Выше-ниже: угадай карту, множитель копится")
+    @app_commands.describe(bet="Ставка")
+    @eco_only
+    async def highlow(self, interaction: discord.Interaction, bet: app_commands.Range[int, 1]):
+        if not await GameBase._check_bet(interaction, bet):
+            return
+        guild = interaction.guild
+        data, acc = _acc(guild.id, interaction.user.id)
+        acc["balance"] -= bet
+        save(ECONOMY_FILE, data)
+        view = HighLowView(guild.id, interaction.user.id, bet, _draw())
+        await interaction.response.send_message(embed=view.render_embed(), view=view)
+        view.message = await interaction.original_response()
+
+    @app_commands.command(name="ttt", description="Крестики-нолики на ставку против другого участника")
+    @app_commands.describe(opponent="С кем играем", bet="Ставка каждого")
+    @eco_only
+    async def ttt(
+        self,
+        interaction: discord.Interaction,
+        opponent: discord.Member,
+        bet: app_commands.Range[int, 1],
+    ):
+        if opponent.id == interaction.user.id:
+            await interaction.response.send_message("С собой играть нечестно.", ephemeral=True)
+            return
+        if opponent.bot:
+            await interaction.response.send_message("С ботами не играем — они и так всё знают.", ephemeral=True)
+            return
+        if not await GameBase._check_bet(interaction, bet):
+            return
+        cur = _currency(interaction.guild.id)
+        view = TicTacToeChallengeView(
+            interaction.guild.id, interaction.user.id, opponent.id, bet
+        )
+        e = _embed(
+            "⭕ Крестики-нолики",
+            f"{interaction.user.mention} вызывает {opponent.mention}\n"
+            f"Ставка каждого: **{_fmt(bet)} {cur}** · банк **{_fmt(bet * 2)} {cur}**\n\n"
+            f"{opponent.mention}, принимаешь?",
+        )
+        await interaction.response.send_message(embed=e, view=view)
 
     # ── Магазин: настройка ────────────────────────────────────────────────
 
@@ -1629,6 +1758,768 @@ async def _do_rps(interaction: discord.Interaction, bet: int, choice: str):
     )
     view = RPSView(bet) if acc["balance"] >= bet else None
     await interaction.response.edit_message(embed=e, view=view)
+
+
+# ── Карты и новые игры ────────────────────────────────────────────────────────
+
+CARD_RANKS = list(range(2, 15))          # 2..10, 11 J, 12 Q, 13 K, 14 A
+CARD_SUITS = ["♠", "♥", "♦", "♣"]
+CARD_FACES = {11: "J", 12: "Q", 13: "K", 14: "A"}
+ROULETTE_RED = {1, 3, 5, 7, 9, 12, 14, 16, 18, 19, 21, 23, 25, 27, 30, 32, 34, 36}
+
+BLACKJACK_PAYOUT = 2.5       # блэкджек платит x2.5 от ставки
+CRASH_CAP = 50.0
+CRASH_STEP = 1.2
+CRASH_TICK = 1.0
+
+MINES_ROWS = 4               # 4x5 = 20 клеток + кнопка «Забрать» — лимит Discord 25 кнопок
+MINES_COLS = 5
+MINES_CELLS = MINES_ROWS * MINES_COLS
+
+TTT_LINES = (
+    (0, 1, 2), (3, 4, 5), (6, 7, 8),
+    (0, 3, 6), (1, 4, 7), (2, 5, 8),
+    (0, 4, 8), (2, 4, 6),
+)
+
+
+def _card(rank: int, suit: str) -> str:
+    return f"{CARD_FACES.get(rank, str(rank))}{suit}"
+
+
+def _draw() -> tuple:
+    return random.choice(CARD_RANKS), random.choice(CARD_SUITS)
+
+
+def _cards_text(cards) -> str:
+    return " ".join(_card(rank, suit) for rank, suit in cards)
+
+
+def _bj_value(cards) -> int:
+    """Сумма очков: туз 11, пока не перебор."""
+    total = 0
+    aces = 0
+    for rank, _suit in cards:
+        if rank == 14:
+            aces += 1
+            total += 11
+        else:
+            total += min(rank, 10)
+    while total > 21 and aces:
+        total -= 10
+        aces -= 1
+    return total
+
+
+def _bj_blackjack(cards) -> bool:
+    return len(cards) == 2 and _bj_value(cards) == 21
+
+
+def _mines_multiplier(mines: int, opened: int) -> float:
+    """Честный множитель за opened открытых клеток при mines минах (маржа 3%)."""
+    if opened <= 0:
+        return 1.0
+    mult = 1.0
+    safe = MINES_CELLS - mines
+    for i in range(opened):
+        mult *= (MINES_CELLS - i) / (safe - i)
+    return round(mult * 0.97, 2)
+
+
+def _crash_point(roll: float) -> float:
+    """Точка краха из случайного roll [0, 1). Маржа 3%, потолок CRASH_CAP."""
+    roll = min(max(roll, 0.0), 0.9999)
+    return min(CRASH_CAP, max(1.0, round(0.97 / (1.0 - roll), 2)))
+
+
+def _roulette_color(spin: int) -> str:
+    if spin == 0:
+        return "зеро"
+    return "красное" if spin in ROULETTE_RED else "чёрное"
+
+
+def _roulette_mult(choice: str, spin: int) -> int:
+    if spin == 0:
+        return 30 if choice == "зеро" else 0
+    return 2 if choice == _roulette_color(spin) else 0
+
+
+def _hl_chance(card: int, direction: str) -> float:
+    if direction == "выше":
+        return (14 - card) / 13
+    if direction == "ниже":
+        return (card - 2) / 13
+    return 0.0
+
+
+def _hl_mult(card: int, direction: str) -> float:
+    """Честный множитель шага: p(угадал) * x == 0.97 — маржа 3% на каждом шаге."""
+    chance = _hl_chance(card, direction)
+    if chance <= 0:
+        return 0.0
+    return round(0.97 / chance, 2)
+
+
+def _ttt_winner(board) -> str:
+    for a, b, c in TTT_LINES:
+        if board[a] and board[a] == board[b] == board[c]:
+            return board[a]
+    return ""
+
+
+def _ttt_full(board) -> bool:
+    return all(board)
+
+
+def _ttt_text(board) -> str:
+    cells = [cell or "·" for cell in board]
+    rows = [" ".join(cells[i:i + 3]) for i in range(0, 9, 3)]
+    return "\n".join(rows)
+
+
+# ── Блэкджек ──────────────────────────────────────────────────────────────────
+
+class BlackjackView(TimeoutView):
+    def __init__(self, guild_id: int, user_id: int, bet: int, player, dealer):
+        super().__init__(timeout=240)
+        self.guild_id = guild_id
+        self.user_id = user_id
+        self.bet = bet
+        self.player = list(player)
+        self.dealer = list(dealer)
+        self.finished = False
+        self.message = None
+
+    def render_embed(self) -> discord.Embed:
+        cur = _currency(self.guild_id)
+        hidden = f"{_card(*self.dealer[0])} 🂠"
+        desc = (
+            f"Твои карты: {_cards_text(self.player)} → **{_bj_value(self.player)}**\n"
+            f"Дилер: {hidden} → **{_bj_value(self.dealer[:1])}**\n\n"
+            f"Ставка: **{_fmt(self.bet)} {cur}**"
+        )
+        return _embed("🃏 Блэкджек", desc)
+
+    def dealer_play(self) -> None:
+        while _bj_value(self.dealer) < 17:
+            self.dealer.append(_draw())
+
+    async def settle(self) -> None:
+        self.finished = True
+        for child in self.children:
+            child.disabled = True
+        cur = _currency(self.guild_id)
+        data, acc = _acc(self.guild_id, self.user_id)
+        player_value = _bj_value(self.player)
+        dealer_value = _bj_value(self.dealer)
+        player_bj = _bj_blackjack(self.player)
+        dealer_bj = _bj_blackjack(self.dealer)
+
+        if player_value > 21:
+            color, result = 0xED4245, f"Перебор ({player_value}). Потерял **{_fmt(self.bet)} {cur}**."
+        elif dealer_bj and not player_bj:
+            color, result = 0xED4245, f"У дилера блэкджек. Потерял **{_fmt(self.bet)} {cur}**."
+        elif player_bj:
+            win = int(self.bet * BLACKJACK_PAYOUT)
+            acc["balance"] += win
+            color, result = 0xFEE75C, f"Блэкджек! Выиграл **{_fmt(win - self.bet)} {cur}** чистыми."
+        elif dealer_value > 21 or player_value > dealer_value:
+            acc["balance"] += self.bet * 2
+            color, result = 0x57F287, f"Победа {player_value} против {dealer_value}. Выиграл **{_fmt(self.bet)} {cur}**."
+        elif player_value == dealer_value:
+            acc["balance"] += self.bet
+            color, result = 0xFEE75C, "Ничья — ставка вернулась."
+        else:
+            color, result = 0xED4245, f"Дилер сильнее ({dealer_value} против {player_value}). Потерял **{_fmt(self.bet)} {cur}**."
+
+        _bump(acc, "games")
+        save(ECONOMY_FILE, data)
+        e = discord.Embed(
+            title="🃏 Блэкджек",
+            description=(
+                f"Ты: {_cards_text(self.player)} → **{player_value}**\n"
+                f"Дилер: {_cards_text(self.dealer)} → **{dealer_value}**\n\n"
+                f"{result}\nБаланс: **{_fmt(acc['balance'])} {cur}**"
+            ),
+            color=color,
+            timestamp=datetime.datetime.now(),
+        )
+        if self.message is not None:
+            try:
+                await self.message.edit(embed=e, view=None)
+            except discord.HTTPException:
+                pass
+
+    @discord.ui.button(label="Ещё", emoji="➕", style=discord.ButtonStyle.primary)
+    async def hit(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("Это чужая раздача.", ephemeral=True)
+            return
+        if self.finished:
+            await interaction.response.send_message("Раздача уже закрыта.", ephemeral=True)
+            return
+        self.player.append(_draw())
+        await interaction.response.defer()
+        if _bj_value(self.player) > 21:
+            await self.settle()
+        else:
+            await self.message.edit(embed=self.render_embed(), view=self)
+
+    @discord.ui.button(label="Хватит", emoji="✋", style=discord.ButtonStyle.secondary)
+    async def stand(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("Это чужая раздача.", ephemeral=True)
+            return
+        if self.finished:
+            await interaction.response.send_message("Раздача уже закрыта.", ephemeral=True)
+            return
+        self.dealer_play()
+        await interaction.response.defer()
+        await self.settle()
+
+    async def on_timeout(self):
+        if self.finished:
+            return
+        self.finished = True
+        data, acc = _acc(self.guild_id, self.user_id)
+        acc["balance"] += self.bet
+        save(ECONOMY_FILE, data)
+        for child in self.children:
+            child.disabled = True
+        if self.message is not None:
+            try:
+                await self.message.edit(
+                    embed=_embed("🃏 Блэкджек", "Время вышло — ставка вернулась."), view=None
+                )
+            except discord.HTTPException:
+                pass
+
+
+async def play_blackjack(interaction: discord.Interaction, bet: int):
+    if not await GameBase._check_bet(interaction, bet):
+        return
+    guild = interaction.guild
+    data, acc = _acc(guild.id, interaction.user.id)
+    acc["balance"] -= bet
+    save(ECONOMY_FILE, data)
+
+    view = BlackjackView(
+        guild.id, interaction.user.id, bet, [_draw(), _draw()], [_draw(), _draw()]
+    )
+    await interaction.response.send_message(embed=view.render_embed(), view=view)
+    view.message = await interaction.original_response()
+    if _bj_blackjack(view.player):
+        await view.settle()
+
+
+# ── Мины ──────────────────────────────────────────────────────────────────────
+
+class MinesView(TimeoutView):
+    def __init__(self, guild_id: int, user_id: int, bet: int, mines: int):
+        super().__init__(timeout=300)
+        self.guild_id = guild_id
+        self.user_id = user_id
+        self.bet = bet
+        self.mines = mines
+        self.opened = 0
+        self.finished = False
+        self.message = None
+        self.mine_cells = set(random.sample(range(MINES_CELLS), mines))
+        for index in range(MINES_CELLS):
+            button = discord.ui.Button(
+                label="·", style=discord.ButtonStyle.secondary, row=index // MINES_COLS
+            )
+            button.callback = self._cell_cb(index)
+            self.add_item(button)
+        self.cash = discord.ui.Button(
+            label="💸 Забрать", style=discord.ButtonStyle.success, row=MINES_ROWS
+        )
+        self.cash.callback = self._cash_cb
+        self.add_item(self.cash)
+
+    def multiplier(self) -> float:
+        return _mines_multiplier(self.mines, self.opened)
+
+    def render_embed(self, text: str = "") -> discord.Embed:
+        cur = _currency(self.guild_id)
+        mult = self.multiplier()
+        body = (
+            f"Мин: **{self.mines}** · открыто: **{self.opened}/{MINES_CELLS - self.mines}**\n"
+            f"Множитель: **x{mult:.2f}** · забрать: **{_fmt(int(self.bet * mult))} {cur}**\n"
+        )
+        if text:
+            body += f"\n{text}"
+        return _embed("💣 Мины", body)
+
+    def freeze(self) -> None:
+        self.finished = True
+        for child in self.children:
+            child.disabled = True
+
+    def _cell_cb(self, index: int):
+        async def callback(interaction: discord.Interaction):
+            if interaction.user.id != self.user_id:
+                await interaction.response.send_message("Это чужое поле.", ephemeral=True)
+                return
+            if self.finished:
+                await interaction.response.send_message("Игра уже закончена.", ephemeral=True)
+                return
+            button = self.children[index]
+            if button.disabled:
+                await interaction.response.send_message("Эта клетка уже открыта.", ephemeral=True)
+                return
+            if index in self.mine_cells:
+                self.freeze()
+                for child_index in self.mine_cells:
+                    mine_button = self.children[child_index]
+                    mine_button.label = "💣"
+                    mine_button.style = discord.ButtonStyle.danger
+                cur = _currency(self.guild_id)
+                await interaction.response.edit_message(
+                    embed=self.render_embed(f"💥 Мина! Потерял **{_fmt(self.bet)} {cur}**."),
+                    view=self,
+                )
+                return
+            self.opened += 1
+            button.label = "💎"
+            button.style = discord.ButtonStyle.success
+            button.disabled = True
+            await interaction.response.edit_message(embed=self.render_embed(), view=self)
+
+        return callback
+
+    async def _cash_cb(self, interaction: discord.Interaction):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("Это чужое поле.", ephemeral=True)
+            return
+        if self.finished:
+            await interaction.response.send_message("Игра уже закончена.", ephemeral=True)
+            return
+        payout = int(self.bet * self.multiplier())
+        data, acc = _acc(self.guild_id, self.user_id)
+        acc["balance"] += payout
+        _bump(acc, "games")
+        save(ECONOMY_FILE, data)
+        self.freeze()
+        cur = _currency(self.guild_id)
+        await interaction.response.edit_message(
+            embed=_embed(
+                "💣 Мины",
+                f"Забрал **{_fmt(payout)} {cur}** на **x{self.multiplier():.2f}** "
+                f"(открыто {self.opened}).\nБаланс: **{_fmt(acc['balance'])} {cur}**",
+            ),
+            view=None,
+        )
+
+    async def on_timeout(self):
+        if self.finished:
+            return
+        self.finished = True
+        data, acc = _acc(self.guild_id, self.user_id)
+        acc["balance"] += self.bet
+        save(ECONOMY_FILE, data)
+        for child in self.children:
+            child.disabled = True
+        if self.message is not None:
+            try:
+                await self.message.edit(
+                    embed=_embed("💣 Мины", "Время вышло — ставка вернулась."), view=None
+                )
+            except discord.HTTPException:
+                pass
+
+
+# ── Краш ──────────────────────────────────────────────────────────────────────
+
+class CrashView(TimeoutView):
+    def __init__(self, guild_id: int, user_id: int, bet: int):
+        super().__init__(timeout=120)
+        self.guild_id = guild_id
+        self.user_id = user_id
+        self.bet = bet
+        self.point = _crash_point(random.random())
+        self.mult = 1.0
+        self.finished = False
+        self.message = None
+        self.task = None
+
+    def render_embed(self, text: str = "") -> discord.Embed:
+        cur = _currency(self.guild_id)
+        body = f"# x{self.mult:.2f}\n\n"
+        body += text or f"Забрать сейчас: **{_fmt(int(self.bet * self.mult))} {cur}**"
+        return _embed("🚀 Краш", body)
+
+    def start(self) -> None:
+        self.task = asyncio.create_task(self._run())
+
+    async def _run(self):
+        try:
+            while not self.finished:
+                await asyncio.sleep(CRASH_TICK)
+                if self.finished:
+                    return
+                nxt = round(self.mult * CRASH_STEP, 2)
+                if nxt >= self.point:
+                    self.mult = self.point
+                    self.finished = True
+                    self.cash.disabled = True
+                    if self.message is not None:
+                        await self.message.edit(
+                            embed=self.render_embed(
+                                f"💥 Краш на **x{self.point:.2f}**. Ставка сгорела."
+                            ),
+                            view=self,
+                        )
+                    return
+                self.mult = nxt
+                if self.message is not None:
+                    self.cash.label = f"💸 Забрать x{self.mult:.2f}"
+                    await self.message.edit(embed=self.render_embed(), view=self)
+        except asyncio.CancelledError:
+            raise
+        except discord.HTTPException:
+            pass
+
+    @discord.ui.button(label="💸 Забрать x1.00", style=discord.ButtonStyle.success)
+    async def cash(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("Это чужая игра.", ephemeral=True)
+            return
+        if self.finished:
+            await interaction.response.send_message("Поздно — уже крашнуло.", ephemeral=True)
+            return
+        self.finished = True
+        if self.task is not None:
+            self.task.cancel()
+        payout = int(self.bet * self.mult)
+        data, acc = _acc(self.guild_id, self.user_id)
+        acc["balance"] += payout
+        _bump(acc, "games")
+        save(ECONOMY_FILE, data)
+        self.cash.disabled = True
+        cur = _currency(self.guild_id)
+        await interaction.response.edit_message(
+            embed=_embed(
+                "🚀 Краш",
+                f"Забрал на **x{self.mult:.2f}** — **{_fmt(payout)} {cur}**.\n"
+                f"Баланс: **{_fmt(acc['balance'])} {cur}**",
+            ),
+            view=None,
+        )
+
+    async def on_timeout(self):
+        if self.task is not None:
+            self.task.cancel()
+        if self.finished:
+            return
+        self.finished = True
+        data, acc = _acc(self.guild_id, self.user_id)
+        acc["balance"] += self.bet
+        save(ECONOMY_FILE, data)
+        for child in self.children:
+            child.disabled = True
+        if self.message is not None:
+            try:
+                await self.message.edit(
+                    embed=_embed("🚀 Краш", "Время вышло — ставка вернулась."), view=None
+                )
+            except discord.HTTPException:
+                pass
+
+
+# ── Выше-ниже ─────────────────────────────────────────────────────────────────
+
+class HighLowView(TimeoutView):
+    def __init__(self, guild_id: int, user_id: int, bet: int, card: tuple):
+        super().__init__(timeout=180)
+        self.guild_id = guild_id
+        self.user_id = user_id
+        self.bet = bet
+        self.card = card
+        self.mult = 1.0
+        self.finished = False
+        self.message = None
+        self._sync_buttons()
+
+    def _sync_buttons(self) -> None:
+        self.above.disabled = self.finished or _hl_mult(self.card[0], "выше") <= 0
+        self.below.disabled = self.finished or _hl_mult(self.card[0], "ниже") <= 0
+
+    def render_embed(self, text: str = "") -> discord.Embed:
+        cur = _currency(self.guild_id)
+        body = (
+            f"Карта: **{_card(*self.card)}**\n"
+            f"Множитель: **x{self.mult:.2f}** · забрать: **{_fmt(int(self.bet * self.mult))} {cur}**\n"
+        )
+        if text:
+            body += f"\n{text}"
+        return _embed("🃏 Выше-ниже", body)
+
+    def freeze(self) -> None:
+        self.finished = True
+        for child in self.children:
+            child.disabled = True
+
+    async def _guess(self, interaction: discord.Interaction, direction: str):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("Это чужая игра.", ephemeral=True)
+            return
+        if self.finished:
+            await interaction.response.send_message("Игра уже закончена.", ephemeral=True)
+            return
+        step = _hl_mult(self.card[0], direction)
+        if step <= 0:
+            await interaction.response.send_message("С этой карты идти уже некуда.", ephemeral=True)
+            return
+
+        previous = self.card
+        nxt = _draw()
+        cur = _currency(self.guild_id)
+
+        if nxt[0] == previous[0]:
+            self.freeze()
+            await interaction.response.edit_message(
+                embed=self.render_embed(
+                    f"Выпала та же карта **{_card(*nxt)}** — ничья в пользу казино. "
+                    f"Потерял **{_fmt(self.bet)} {cur}**."
+                ),
+                view=None,
+            )
+            return
+
+        won = (direction == "выше" and nxt[0] > previous[0]) or (
+            direction == "ниже" and nxt[0] < previous[0]
+        )
+        if not won:
+            self.freeze()
+            await interaction.response.edit_message(
+                embed=self.render_embed(
+                    f"Выпала **{_card(*nxt)}** — не угадал. Потерял **{_fmt(self.bet)} {cur}**."
+                ),
+                view=None,
+            )
+            return
+
+        self.mult = round(self.mult * step, 2)
+        self.card = nxt
+        self._sync_buttons()
+        await interaction.response.edit_message(
+            embed=self.render_embed(f"Выпала **{_card(*nxt)}** — угадал."),
+            view=self,
+        )
+
+    @discord.ui.button(label="Выше", emoji="⬆️", style=discord.ButtonStyle.primary)
+    async def above(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._guess(interaction, "выше")
+
+    @discord.ui.button(label="Ниже", emoji="⬇️", style=discord.ButtonStyle.primary)
+    async def below(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._guess(interaction, "ниже")
+
+    @discord.ui.button(label="💸 Забрать", style=discord.ButtonStyle.success)
+    async def cash(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("Это чужая игра.", ephemeral=True)
+            return
+        if self.finished:
+            await interaction.response.send_message("Игра уже закончена.", ephemeral=True)
+            return
+        payout = int(self.bet * self.mult)
+        data, acc = _acc(self.guild_id, self.user_id)
+        acc["balance"] += payout
+        _bump(acc, "games")
+        save(ECONOMY_FILE, data)
+        self.freeze()
+        cur = _currency(self.guild_id)
+        await interaction.response.edit_message(
+            embed=_embed(
+                "🃏 Выше-ниже",
+                f"Забрал **{_fmt(payout)} {cur}** на **x{self.mult:.2f}**.\n"
+                f"Баланс: **{_fmt(acc['balance'])} {cur}**",
+            ),
+            view=None,
+        )
+
+    async def on_timeout(self):
+        if self.finished:
+            return
+        self.finished = True
+        data, acc = _acc(self.guild_id, self.user_id)
+        acc["balance"] += self.bet
+        save(ECONOMY_FILE, data)
+        for child in self.children:
+            child.disabled = True
+        if self.message is not None:
+            try:
+                await self.message.edit(
+                    embed=_embed("🃏 Выше-ниже", "Время вышло — ставка вернулась."), view=None
+                )
+            except discord.HTTPException:
+                pass
+
+
+# ── Крестики-нолики на ставку ─────────────────────────────────────────────────
+
+class TicTacToeView(TimeoutView):
+    def __init__(self, guild_id: int, bet: int, x_id: int, o_id: int):
+        super().__init__(timeout=300)
+        self.guild_id = guild_id
+        self.bet = bet
+        self.x_id = x_id
+        self.o_id = o_id
+        self.board = [""] * 9
+        self.turn = "X"
+        self.finished = False
+        self.message = None
+        for index in range(9):
+            button = discord.ui.Button(
+                label="·", style=discord.ButtonStyle.secondary, row=index // 3
+            )
+            button.callback = self._move_cb(index)
+            self.add_item(button)
+
+    def current_id(self) -> int:
+        return self.x_id if self.turn == "X" else self.o_id
+
+    def render_embed(self, text: str = "") -> discord.Embed:
+        cur = _currency(self.guild_id)
+        mark = "❌" if self.turn == "X" else "⭕"
+        body = (
+            f"❌ <@{self.x_id}> против ⭕ <@{self.o_id}>\n"
+            f"Банк: **{_fmt(self.bet * 2)} {cur}**\n\n"
+            f"Ход: {mark} <@{self.current_id()}>\n"
+        )
+        if text:
+            body += f"\n{text}"
+        return _embed("⭕ Крестики-нолики", body)
+
+    def freeze(self) -> None:
+        self.finished = True
+        for child in self.children:
+            child.disabled = True
+
+    def _move_cb(self, index: int):
+        async def callback(interaction: discord.Interaction):
+            if self.finished:
+                await interaction.response.send_message("Партия уже закончена.", ephemeral=True)
+                return
+            if interaction.user.id != self.current_id():
+                await interaction.response.send_message("Сейчас не твой ход.", ephemeral=True)
+                return
+            if self.board[index]:
+                await interaction.response.send_message("Клетка занята.", ephemeral=True)
+                return
+
+            self.board[index] = self.turn
+            button = self.children[index]
+            button.label = "❌" if self.turn == "X" else "⭕"
+            button.disabled = True
+            button.style = (
+                discord.ButtonStyle.danger if self.turn == "X" else discord.ButtonStyle.primary
+            )
+
+            winner = _ttt_winner(self.board)
+            if winner or _ttt_full(self.board):
+                await self._finish(interaction, winner)
+                return
+
+            self.turn = "O" if self.turn == "X" else "X"
+            await interaction.response.edit_message(embed=self.render_embed(), view=self)
+
+        return callback
+
+    async def _finish(self, interaction: discord.Interaction, winner: str):
+        self.freeze()
+        cur = _currency(self.guild_id)
+        data = load(ECONOMY_FILE, {})
+        x_acc = _acc_from(data, self.guild_id, self.x_id)
+        o_acc = _acc_from(data, self.guild_id, self.o_id)
+        if winner:
+            winner_id = self.x_id if winner == "X" else self.o_id
+            acc = x_acc if winner == "X" else o_acc
+            acc["balance"] += self.bet * 2
+            text = f"Победил <@{winner_id}> — забрал банк **{_fmt(self.bet * 2)} {cur}**."
+        else:
+            x_acc["balance"] += self.bet
+            o_acc["balance"] += self.bet
+            text = "Ничья — ставки вернулись."
+        _bump(x_acc, "games")
+        _bump(o_acc, "games")
+        save(ECONOMY_FILE, data)
+        await interaction.response.edit_message(
+            embed=_embed(
+                "⭕ Крестики-нолики",
+                f"{_ttt_text(self.board)}\n\n{text}",
+            ),
+            view=None,
+        )
+
+    async def on_timeout(self):
+        if self.finished:
+            return
+        self.finished = True
+        data = load(ECONOMY_FILE, {})
+        x_acc = _acc_from(data, self.guild_id, self.x_id)
+        o_acc = _acc_from(data, self.guild_id, self.o_id)
+        x_acc["balance"] += self.bet
+        o_acc["balance"] += self.bet
+        save(ECONOMY_FILE, data)
+        for child in self.children:
+            child.disabled = True
+        if self.message is not None:
+            try:
+                await self.message.edit(
+                    embed=_embed("⭕ Крестики-нолики", "Время вышло — ставки вернулись."),
+                    view=None,
+                )
+            except discord.HTTPException:
+                pass
+
+
+class TicTacToeChallengeView(TimeoutView):
+    def __init__(self, guild_id: int, challenger_id: int, opponent_id: int, bet: int):
+        super().__init__(timeout=120)
+        self.guild_id = guild_id
+        self.challenger_id = challenger_id
+        self.opponent_id = opponent_id
+        self.bet = bet
+
+    @discord.ui.button(label="Принять", emoji="⭕", style=discord.ButtonStyle.success)
+    async def accept(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.opponent_id:
+            await interaction.response.send_message("Это чужой вызов.", ephemeral=True)
+            return
+        cur = _currency(self.guild_id)
+        data = load(ECONOMY_FILE, {})
+        challenger = _acc_from(data, self.guild_id, self.challenger_id)
+        opponent = _acc_from(data, self.guild_id, self.opponent_id)
+        if challenger["balance"] < self.bet:
+            await interaction.response.edit_message(
+                embed=_embed("⭕ Вызов сорвался", "У вызывающего не хватает монет."), view=None
+            )
+            return
+        if opponent["balance"] < self.bet:
+            await interaction.response.send_message(
+                f"Не хватает: ставка {_fmt(self.bet)} {cur}.", ephemeral=True
+            )
+            return
+        challenger["balance"] -= self.bet
+        opponent["balance"] -= self.bet
+        save(ECONOMY_FILE, data)
+        view = TicTacToeView(self.guild_id, self.bet, self.challenger_id, self.opponent_id)
+        self.stop()
+        await interaction.response.edit_message(embed=view.render_embed(), view=view)
+        view.message = await interaction.original_response()
+
+    @discord.ui.button(label="Отказаться", style=discord.ButtonStyle.secondary)
+    async def decline(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id not in (self.challenger_id, self.opponent_id):
+            await interaction.response.send_message("Это чужой вызов.", ephemeral=True)
+            return
+        self.stop()
+        await interaction.response.edit_message(
+            embed=_embed("⭕ Вызов отменён", f"{interaction.user.mention} отказался."), view=None
+        )
 
 
 async def setup(bot: commands.Bot):

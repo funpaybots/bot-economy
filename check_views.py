@@ -32,6 +32,8 @@ CASES = [
     (eco.HighLowView, (1, 2, 10, (7, "♠"))),
     (eco.TicTacToeView, (1, 10, 2, 3)),
     (eco.TicTacToeChallengeView, (1, 2, 3, 10)),
+    (eco.PvpBlackjackView, (1, 10, 2, 3)),
+    (eco.PvpBlackjackChallengeView, (1, 2, 3, 10)),
 ]
 
 failed = 0

@@ -4,6 +4,7 @@
 Запуск: python check_games.py
 """
 
+import asyncio
 import os
 import sys
 import tempfile
@@ -138,6 +139,69 @@ check("mines buttons fit limit", len(view.children) == eco.MINES_CELLS + 1 and l
       f"{len(view.children)} кнопок")
 mine_view2 = eco.TicTacToeView(1, 10, 2, 3)
 check("ttt nine cells", len(mine_view2.children) == 9)
+
+# ── Блэкджек на двоих ─────────────────────────────────────────────────────────
+
+check("pvp higher wins", eco._bj_pvp_compare([(10, "♠"), (9, "♥")], [(10, "♦"), (8, "♣")]) == "p1")
+check("pvp bust loses", eco._bj_pvp_compare([(10, "♠"), (9, "♥"), (5, "♦")], [(2, "♦"), (3, "♣")]) == "p2")
+check("pvp equal is push", eco._bj_pvp_compare([(10, "♠"), (9, "♥")], [(10, "♦"), (9, "♣")]) == "push")
+check(
+    "pvp natural beats three-card 21",
+    eco._bj_pvp_compare([(14, "♠"), (13, "♥")], [(7, "♦"), (7, "♣"), (7, "♥")]) == "p1",
+)
+check(
+    "pvp both natural push",
+    eco._bj_pvp_compare([(14, "♠"), (13, "♥")], [(14, "♦"), (13, "♣")]) == "push",
+)
+
+pvp = eco.PvpBlackjackView(1, 10, 111, 222)
+pvp.hands = {111: [(10, "♠"), (9, "♥")], 222: [(10, "♦"), (8, "♣")]}
+pvp_emb = pvp.render_embed()
+check("pvp embed shows both", "<@111>" in pvp_emb.description and "<@222>" in pvp_emb.description)
+check("pvp embed marks turn", "ход" in pvp_emb.description)
+check("pvp embed has bank", "Банк" in pvp_emb.description)
+check("pvp two buttons", len(pvp.children) == 2)
+
+
+async def _forfeit_case():
+    view = eco.PvpBlackjackView(1, 10, 111, 222)
+    view.hands = {111: [(10, "♠"), (9, "♥")], 222: [(10, "♦"), (8, "♣")]}
+    await view._turn_timeout(111)
+    return view
+
+
+old_seconds = eco.PVP_TURN_SECONDS
+eco.PVP_TURN_SECONDS = 0.01
+try:
+    forfeit_view = asyncio.run(_forfeit_case())
+finally:
+    eco.PVP_TURN_SECONDS = old_seconds
+check("pvp forfeit closes game", forfeit_view.finished)
+saved = eco.load(eco.ECONOMY_FILE, {})
+p2_balance = saved.get("1", {}).get("222", {}).get("balance", 0)
+check("pvp forfeit pays opponent", p2_balance == 20, f"balance={p2_balance}")
+
+# Натуральный блэкджек с раздачи закрывает партию сразу и без таймера.
+async def _natural_case():
+    view = eco.PvpBlackjackView(1, 10, 333, 444)
+    view.hands = {333: [(14, "♠"), (13, "♥")], 444: [(10, "♦"), (8, "♣")]}
+    await view.start()
+    return view
+
+
+natural_view = asyncio.run(_natural_case())
+check("pvp natural closes game", natural_view.finished)
+saved = eco.load(eco.ECONOMY_FILE, {})
+check(
+    "pvp natural pays winner",
+    saved.get("1", {}).get("333", {}).get("balance", 0) == 20,
+    f"{saved.get('1', {}).get('333', {}).get('balance', 0)}",
+)
+
+for view_name in ("PvpBlackjackView", "PvpBlackjackChallengeView"):
+    check(f"{view_name} exists", hasattr(eco, view_name))
+challenge = eco.PvpBlackjackChallengeView(1, 111, 222, 10)
+check("pvp challenge two buttons", len(challenge.children) == 2)
 
 print()
 if failed:
